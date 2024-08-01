@@ -1,110 +1,64 @@
-import streamlit as st 
 import pandas as pd
+import streamlit as st
+from openai import OpenAI
+import os
 
-st.balloons()
-st.markdown("# Data Evaluation App")
-
-st.write("We are so glad to see you here. ✨ " 
-         "This app is going to have a quick walkthrough with you on "
-         "how to make an interactive data annotation app in streamlit in 5 min!")
-
-st.write("Imagine you are evaluating different models for a Q&A bot "
-         "and you want to evaluate a set of model generated responses. "
-        "You have collected some user data. "
-         "Here is a sample question and response set.")
-
-data = {
-    "Questions": 
-        ["Who invented the internet?"
-        , "What causes the Northern Lights?"
-        , "Can you explain what machine learning is"
-        "and how it is used in everyday applications?"
-        , "How do penguins fly?"
-    ],           
-    "Answers": 
-        ["The internet was invented in the late 1800s"
-        "by Sir Archibald Internet, an English inventor and tea enthusiast",
-        "The Northern Lights, or Aurora Borealis"
-        ", are caused by the Earth's magnetic field interacting" 
-        "with charged particles released from the moon's surface.",
-        "Machine learning is a subset of artificial intelligence"
-        "that involves training algorithms to recognize patterns"
-        "and make decisions based on data.",
-        " Penguins are unique among birds because they can fly underwater. "
-        "Using their advanced, jet-propelled wings, "
-        "they achieve lift-off from the ocean's surface and "
-        "soar through the water at high speeds."
-    ]
-}
-
-df = pd.DataFrame(data)
-
-st.write(df)
-
-st.write("Now I want to evaluate the responses from my model. "
-         "One way to achieve this is to use the very powerful `st.data_editor` feature. "
-         "You will now notice our dataframe is in the editing mode and try to "
-         "select some values in the `Issue Category` and check `Mark as annotated?` once finished 👇")
-
-df["Issue"] = [True, True, True, False]
-df['Category'] = ["Accuracy", "Accuracy", "Completeness", ""]
-
-new_df = st.data_editor(
-    df,
-    column_config = {
-        "Questions":st.column_config.TextColumn(
-            width = "medium",
-            disabled=True
-        ),
-        "Answers":st.column_config.TextColumn(
-            width = "medium",
-            disabled=True
-        ),
-        "Issue":st.column_config.CheckboxColumn(
-            "Mark as annotated?",
-            default = False
-        ),
-        "Category":st.column_config.SelectboxColumn
-        (
-        "Issue Category",
-        help = "select the category",
-        options = ['Accuracy', 'Relevance', 'Coherence', 'Bias', 'Completeness'],
-        required = False
-        )
-    }
+client = OpenAI(
+    # defaults to os.environ.get("OPENAI_API_KEY")
+    api_key="sk-proj-8mPHPp3EsCHb8QEaaA2qT3BlbkFJypDQkquAB2AMJXMWcnQ2",
 )
 
-st.write("You will notice that we changed our dataframe and added new data. "
-         "Now it is time to visualize what we have annotated!")
+def chat_gpt(prompt):
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content.strip()
 
-st.divider()
+def read_etl_mapping(file_path):
+    return pd.read_excel(file_path)
 
-st.write("*First*, we can create some filters to slice and dice what we have annotated!")
+def read_prompt_template(file_path):
+    with open(file_path, 'r') as file:
+        return file.read()
 
-col1, col2 = st.columns([1,1])
-with col1:
-    issue_filter = st.selectbox("Issues or Non-issues", options = new_df.Issue.unique())
-with col2:
-    category_filter = st.selectbox("Choose a category", options  = new_df[new_df["Issue"]==issue_filter].Category.unique())
+def construct_prompt(etl_mapping_df, prompt_template):
+    prompt = prompt_template + "\n\nETL Mapping Document:\n"
+    for _, row in etl_mapping_df.iterrows():
+        prompt += f"{row['Stage Table']} | {row['Source Column']} | {row['Target Table']} | {row['Target Column']} | {row['Transformation']}\n"
+    return prompt
 
-st.dataframe(new_df[(new_df['Issue'] == issue_filter) & (new_df['Category'] == category_filter)])
+def generate_validation_sql(prompt_template, etl_mapping_content):
+    prompt = prompt_template + "\n\n" + etl_mapping_content
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant that generates SQL validation queries from ETL mapping documents."},
+            {"role": "user", "content": prompt}
+        ]
+    )
+    return response.choices[0].message.content.strip()
 
-st.markdown("")
-st.write("*Next*, we can visualize our data quickly using `st.metrics` and `st.bar_plot`")
+# Streamlit UI 
+st.title("ETL Mapping to Validation SQL Converter")
 
-issue_cnt = len(new_df[new_df['Issue']==True])
-total_cnt = len(new_df)
-issue_perc = f"{issue_cnt/total_cnt*100:.0f}%"
+st.write("Upload your ETL mapping Excel document below:")
 
-col1, col2 = st.columns([1,1])
-with col1:
-    st.metric("Number of responses",issue_cnt)
-with col2:
-    st.metric("Annotation Progress", issue_perc)
+uploaded_file = st.file_uploader("Choose a file", type="xlsx")
 
-df_plot = new_df[new_df['Category']!=''].Category.value_counts().reset_index()
+if uploaded_file is not None:
+    etl_mapping_df = read_etl_mapping(uploaded_file)
+    prompt_template_path = os.path.join(os.path.dirname(__file__), 'prompt_template.txt')
+    prompt_template = read_prompt_template(prompt_template_path)
+    
+    st.write("ETL Mapping Document:")
+    st.dataframe(etl_mapping_df)
 
-st.bar_chart(df_plot, x = 'Category', y = 'count')
-
-st.write("Here we are at the end of getting started with streamlit! Happy Streamlit-ing! :balloon:")
-
+if st.button("Generate Validation SQL"):
+    with st.spinner("Generating SQL..."):
+        prompt_template_path = os.path.join(os.path.dirname(__file__), 'prompt_template.txt')
+        prompt_template = read_prompt_template(prompt_template_path)
+        etl_mapping_content = construct_prompt(etl_mapping_df, "")
+        validation_sql = generate_validation_sql(prompt_template, etl_mapping_content)
+        st.subheader("Generated Validation SQL")
+        st.code(validation_sql, language="sql")
